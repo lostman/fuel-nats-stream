@@ -1,0 +1,20 @@
+[package]
+name = "fuel-nats-stream"
+version = "0.1.0"
+edition = "2021"
+authors = ["Fuel Labs <contact@fuel.sh>"]
+homepage = "https://fuel.network/"
+keywords = ["blockchain", "cryptocurrencies"]
+license = "BUSL-1.1"
+
+[dependencies]
+fuel-core-client = "0.22.3"
+fuel-core-client-ext = "0.1"
+fuel-core-types = "0.22.3"
+fuels = "0.52.0"
+anyhow = "1"
+tokio = "1"
+futures = "0.3.30"
+async-stream = "0.3.5"
+async-nats = "0.34.0"
+clap = { version = "4.5.4", features = ["derive"] }
