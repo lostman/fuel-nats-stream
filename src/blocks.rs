@@ -1,16 +1,54 @@
+use std::str::FromStr;
+
 use fuel_core_client::client::pagination::{PageDirection, PaginationRequest};
 use fuel_core_client::client::FuelClient;
 use fuel_core_client_ext::{ClientExt, FullBlock};
 
 use async_stream::stream;
-
 use futures::StreamExt;
 
+// fuels::macros::abigen!(Contract(
+//     name = "Counter",
+//     abi = "../fuel-counter/contracts/counter/out/release/counter-abi.json"
+// ));
+
+pub async fn last_processed_block_height() -> anyhow::Result<u32> {
+    let client = async_nats::connect("localhost:4222").await?;
+
+    let jetstream = async_nats::jetstream::new(client);
+
+    let consumer: async_nats::jetstream::consumer::PullConsumer = jetstream
+        .get_stream("fuel")
+        .await?
+        // Then, on that `Stream` use method to create Consumer and bind to it too.
+        .create_consumer(async_nats::jetstream::consumer::pull::Config {
+            filter_subject: "blocks.*".to_string(),
+            deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::Last,
+            ..Default::default()
+        })
+        .await?;
+
+    let message = consumer.stream().messages().await?.next().await;
+
+    if let Some(Ok(message)) = message {
+        let height = message.subject.split('.').last().unwrap();
+        let height = height.parse::<u32>()?;
+        Ok(height)
+    } else {
+        anyhow::bail!("No message found");
+    }
+}
+
 /// Connect to a NATS server and publish messages
-///   receipts.{kind}                      e.g. receipts.log_data
-//    receipts.{contract_id}.{kind}
-///   transactions.{height}.{index}.{kind} e.g. transactions.1.1.mint
-///   blocks.{height}                      e.g. blocks.1
+///   receipts.{kind}                        e.g. receipts.log_data
+//    receipts.{height}.{contract_id}.{kind} e.g. receipts.9000.>
+///   receipts.{topic}                       e.g. receipts.my_custom_topic
+///   TODO
+///   receipts.{topic}.{topic}
+///   TODO
+///   receipts.{topic}.{topic}.{topic}       e.g. receipts.topic_a.topic_b.topic_c
+///   transactions.{height}.{index}.{kind}   e.g. transactions.1.1.mint
+///   blocks.{height}                        e.g. blocks.1
 pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
     // Connect to the NATS server
     let client = async_nats::connect("localhost:4222").await?;
@@ -24,6 +62,7 @@ pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
                 "blocks.*".to_string(),
                 "receipts.*".to_string(),
                 "receipts.*.*".to_string(),
+                "receipts.*.*.*".to_string(),
                 "transactions.*".to_string(),
             ],
             storage: async_nats::jetstream::stream::StorageType::File,
@@ -53,17 +92,48 @@ pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
                     ReceiptType::Mint => "mint",
                     ReceiptType::Burn => "burn",
                 };
+                // receipt topics, if any
+                if let ReceiptType::LogData = r.receipt_type {
+                    use fuel_core_client::client::schema::Bytes;
+                    let data = r.data.as_ref().unwrap();
+                    let data: &Bytes = &**data;
+                    println!("Log Data Length: {}", data.len());
+                    let header = Bytes::from_str("0x0000000012345678").unwrap();
+
+                    if data.starts_with(&header.0) {
+                        // With ABIDecoder
+                        // let abi_decoder = ABIDecoder::new(DecoderConfig::default());
+                        // let token = abi_decoder.decode(&topic::Topic::param_type(), &data.0)?;
+                        // use fuels::core::traits::Tokenizable;
+                        // let topic_msg = Topic::from_token(token)?;
+                        // let topic_bytes = topic_msg.topic.0;
+                        // let topic = String::from_utf8_lossy(&topic_bytes);
+
+                        // Without ABIDecoder
+                        let data = &data[header.0.len()..];
+                        let topic_bytes: Vec<u8> =
+                            data[..32].iter().cloned().take_while(|x| *x > 0).collect();
+                        let topic = String::from_utf8_lossy(&topic_bytes);
+
+                        // Publish
+                        jetstream
+                            .publish(format!("receipts.{topic}"), vec![7u8].into())
+                            .await?;
+                    }
+                }
                 let payload = format!("{r:#?}");
-                if let Some(contract_id) = &r.contract_id {
+                if let Some(contract_id) = &r.contract {
+                    let contract_id = contract_id.id.clone();
+                    let subject = format!("receipts.{height}.{contract_id}.{receipt_kind}");
+                    jetstream.publish(subject, payload.into()).await?;
+                } else {
+                    let contract_id =
+                        "0000000000000000000000000000000000000000000000000000000000000000";
                     jetstream
                         .publish(
-                            format!("receipts.{contract_id}.{receipt_kind}"),
+                            format!("receipts.{height}.{contract_id}.{receipt_kind}"),
                             payload.into(),
                         )
-                        .await?;
-                } else {
-                    jetstream
-                        .publish(format!("receipts.{receipt_kind}"), payload.into())
                         .await?;
                 }
             }
@@ -98,17 +168,29 @@ pub fn full_block_stream(url: String, start_block: u32) -> impl futures::Stream<
     let stream = futures::stream::unfold(
         (client, Some(start_block.to_string())),
         |(client, cursor)| async move {
+            println!(
+                "Client::full_blocks: cursor={}",
+                cursor.clone().unwrap_or("0".to_string())
+            );
+            let req_start = std::time::Instant::now();
             let page_req = PaginationRequest::<String> {
                 cursor: cursor.clone(),
-                results: 64,
+                results: 256,
                 direction: PageDirection::Forward,
             };
-            let req_start = std::time::Instant::now();
-            println!("Client::full_blocks request");
             match client.full_blocks(page_req).await {
                 Ok(result) => {
-                    println!("Client::full_blocks reqeust in {:?}", req_start.elapsed());
-                    Some((result.results, (client, result.cursor)))
+                    println!(
+                        "Client::full_blocks: completed in {:?}",
+                        req_start.elapsed()
+                    );
+                    if result.cursor.is_none() {
+                        println!("Client::full_blocks: reached the tip of the chain. Sleeping.");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        Some((result.results, (client, cursor)))
+                    } else {
+                        Some((result.results, (client, result.cursor)))
+                    }
                 }
                 // HTTP or other error. Keep trying.
                 Err(err) => {
