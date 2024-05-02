@@ -40,13 +40,9 @@ pub async fn last_processed_block_height() -> anyhow::Result<u32> {
 }
 
 /// Connect to a NATS server and publish messages
-///   receipts.{kind}                        e.g. receipts.log_data
+///   receipts.{height}.{kind}               e.g. receipts.9000.log_data
 //    receipts.{height}.{contract_id}.{kind} e.g. receipts.9000.>
-///   receipts.{topic}                       e.g. receipts.my_custom_topic
-///   TODO
-///   receipts.{topic}.{topic}
-///   TODO
-///   receipts.{topic}.{topic}.{topic}       e.g. receipts.topic_a.topic_b.topic_c
+///   receipts.{height}.{topic}              e.g. receipts.*.my_custom_topic
 ///   transactions.{height}.{index}.{kind}   e.g. transactions.1.1.mint
 ///   blocks.{height}                        e.g. blocks.1
 pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
@@ -114,10 +110,11 @@ pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
                         let topic_bytes: Vec<u8> =
                             data[..32].iter().cloned().take_while(|x| *x > 0).collect();
                         let topic = String::from_utf8_lossy(&topic_bytes);
+                        let payload = data[32..].to_owned();
 
                         // Publish
                         jetstream
-                            .publish(format!("receipts.{topic}"), vec![7u8].into())
+                            .publish(format!("receipts.{height}.{topic}"), payload.into())
                             .await?;
                     }
                 }
