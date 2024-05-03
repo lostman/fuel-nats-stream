@@ -7,6 +7,8 @@ use fuel_core_client_ext::{ClientExt, FullBlock};
 use async_stream::stream;
 use futures::StreamExt;
 
+const NUM_TOPICS: usize = 3;
+
 // fuels::macros::abigen!(Contract(
 //     name = "Counter",
 //     abi = "../fuel-counter/contracts/counter/out/release/counter-abi.json"
@@ -40,11 +42,13 @@ pub async fn last_processed_block_height() -> anyhow::Result<u32> {
 }
 
 /// Connect to a NATS server and publish messages
-///   receipts.{height}.{kind}               e.g. receipts.9000.log_data
-//    receipts.{height}.{contract_id}.{kind} e.g. receipts.9000.>
-///   receipts.{height}.{topic}              e.g. receipts.*.my_custom_topic
-///   transactions.{height}.{index}.{kind}   e.g. transactions.1.1.mint
-///   blocks.{height}                        e.g. blocks.1
+///   receipts.{height}.{kind}                         e.g. receipts.9000.log_data
+//    receipts.{height}.{contract_id}.{kind}           e.g. receipts.9000.>
+///   receipts.{height}.{topic_1}                      e.g. receipts.*.my_custom_topic
+///   receipts.{height}.{topic_1}.{topic_2}            e.g. receipts.*.counter.inrc
+///   receipts.{height}.{topic_1}.{topic_2}.{topic_3}
+///   transactions.{height}.{index}.{kind}             e.g. transactions.1.1.mint
+///   blocks.{height}                                  e.g. blocks.1
 pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
     // Connect to the NATS server
     let client = async_nats::connect("localhost:4222").await?;
@@ -56,9 +60,14 @@ pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
             name: "fuel".to_string(),
             subjects: vec![
                 "blocks.*".to_string(),
-                "receipts.*".to_string(),
+                // receipts.{height}.{topic_1}
                 "receipts.*.*".to_string(),
+                // receipts.{height}.{topic_1}.{topic_2}
+                // or
+                // receipts.{height}.{contract_id}.{kind}
                 "receipts.*.*.*".to_string(),
+                // receipts.{height}.{topic_1}.{topic_2}.{topic_3}
+                "receipts.*.*.*.*".to_string(),
                 "transactions.*".to_string(),
             ],
             storage: async_nats::jetstream::stream::StorageType::File,
@@ -107,14 +116,25 @@ pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
 
                         // Without ABIDecoder
                         let data = &data[header.0.len()..];
-                        let topic_bytes: Vec<u8> =
-                            data[..32].iter().cloned().take_while(|x| *x > 0).collect();
-                        let topic = String::from_utf8_lossy(&topic_bytes);
-                        let payload = data[32..].to_owned();
+                        let mut topics = vec![];
+                        for i in 0..NUM_TOPICS {
+                            let topic_bytes: Vec<u8> = data[32 * i..32 * (i + 1)]
+                                .iter()
+                                .cloned()
+                                .take_while(|x| *x > 0)
+                                .collect();
+                            let topic = String::from_utf8_lossy(&topic_bytes).into_owned();
+                            if !topic.is_empty() {
+                                topics.push(topic);
+                            }
+                        }
+                        let topics = topics.join(".");
+                        let payload = data[NUM_TOPICS * 32..].to_owned();
 
                         // Publish
+                        println!("Publishing to topic: {}", format!("receipts.{height}.{topics}"));
                         jetstream
-                            .publish(format!("receipts.{height}.{topic}"), payload.into())
+                            .publish(format!("receipts.{height}.{topics}"), payload.into())
                             .await?;
                     }
                 }
