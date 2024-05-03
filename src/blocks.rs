@@ -42,13 +42,12 @@ pub async fn last_processed_block_height() -> anyhow::Result<u32> {
 }
 
 /// Connect to a NATS server and publish messages
-///   receipts.{height}.{kind}                         e.g. receipts.9000.log_data
-//    receipts.{height}.{contract_id}.{kind}           e.g. receipts.9000.>
-///   receipts.{height}.{topic_1}                      e.g. receipts.*.my_custom_topic
-///   receipts.{height}.{topic_1}.{topic_2}            e.g. receipts.*.counter.inrc
-///   receipts.{height}.{topic_1}.{topic_2}.{topic_3}
-///   transactions.{height}.{index}.{kind}             e.g. transactions.1.1.mint
-///   blocks.{height}                                  e.g. blocks.1
+//    receipts.{height}.{contract_id}.{kind}                         e.g. receipts.9000.*.return
+///   receipts.{height}.{contract_id}.{topic_1}                      e.g. receipts.*.my_custom_topic
+///   receipts.{height}.{contract_id}.{topic_1}.{topic_2}            e.g. receipts.*.counter.inrc
+///   receipts.{height}.{contract_id}.{topic_1}.{topic_2}.{topic_3}
+///   transactions.{height}.{index}.{kind}                           e.g. transactions.1.1.mint
+///   blocks.{height}                                                e.g. blocks.1
 pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
     // Connect to the NATS server
     let client = async_nats::connect("localhost:4222").await?;
@@ -60,14 +59,14 @@ pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
             name: "fuel".to_string(),
             subjects: vec![
                 "blocks.*".to_string(),
-                // receipts.{height}.{topic_1}
-                "receipts.*.*".to_string(),
-                // receipts.{height}.{topic_1}.{topic_2}
-                // or
                 // receipts.{height}.{contract_id}.{kind}
+                // or
+                // receipts.{height}.{contract_id}.{topic_1}
                 "receipts.*.*.*".to_string(),
-                // receipts.{height}.{topic_1}.{topic_2}.{topic_3}
+                // receipts.{height}.{contract_id}.{topic_1}.{topic_2}
                 "receipts.*.*.*.*".to_string(),
+                // receipts.{height}.{contract_id}.{topic_1}.{topic_2}.{topic_3}
+                "receipts.*.*.*.*.*".to_string(),
                 "transactions.*".to_string(),
             ],
             storage: async_nats::jetstream::stream::StorageType::File,
@@ -97,6 +96,11 @@ pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
                     ReceiptType::Mint => "mint",
                     ReceiptType::Burn => "burn",
                 };
+                // contract ID or empty contract ID
+                let contract_id = r.contract.as_ref().map(|x| x.id.to_string()).unwrap_or(
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                );
+
                 // receipt topics, if any
                 if let ReceiptType::LogData = r.receipt_type {
                     use fuel_core_client::client::schema::Bytes;
@@ -132,27 +136,21 @@ pub async fn publisher(url: String, start_block: u32) -> anyhow::Result<()> {
                         let payload = data[NUM_TOPICS * 32..].to_owned();
 
                         // Publish
-                        println!("Publishing to topic: {}", format!("receipts.{height}.{topics}"));
+                        println!(
+                            "Publishing to topic: {}",
+                            format!("receipts.{height}.{contract_id}.{topics}")
+                        );
                         jetstream
-                            .publish(format!("receipts.{height}.{topics}"), payload.into())
+                            .publish(
+                                format!("receipts.{height}.{contract_id}.{topics}"),
+                                payload.into(),
+                            )
                             .await?;
                     }
                 }
                 let payload = format!("{r:#?}");
-                if let Some(contract_id) = &r.contract {
-                    let contract_id = contract_id.id.clone();
-                    let subject = format!("receipts.{height}.{contract_id}.{receipt_kind}");
-                    jetstream.publish(subject, payload.into()).await?;
-                } else {
-                    let contract_id =
-                        "0000000000000000000000000000000000000000000000000000000000000000";
-                    jetstream
-                        .publish(
-                            format!("receipts.{height}.{contract_id}.{receipt_kind}"),
-                            payload.into(),
-                        )
-                        .await?;
-                }
+                let subject = format!("receipts.{height}.{contract_id}.{receipt_kind}");
+                jetstream.publish(subject, payload.into()).await?;
             }
 
             use fuel_core_types::fuel_types::canonical::Deserialize;

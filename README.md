@@ -21,8 +21,8 @@ make deploy && make call
 Subscribe to NATS stream:
 
 ```
-nats sub "receipts.*.counter.>" --headers-only --last
-15:19:45 Subscribing to JetStream Stream holding messages with subject receipts.*.counter.> starting with the last message received
-[#1] Received JetStream message: stream: fuel seq 168 / subject: receipts.11253361.counter.incr / time: 2024-05-02T15:19:40+02:00
+nats sub "receipts.*.*.counter.>" --last --headers-only
+12:56:39 Subscribing to JetStream Stream holding messages with subject receipts.*.*.counter.> starting with the last message received
+[#1] Received JetStream message: stream: fuel seq 8664 / subject: receipts.11330484.0x6dc4a9176a319bf20f35de5d6d817344351755163dbf1704400ba43f5e41d15f.counter.incr / time: 2024-05-03T12:55:27+02:00
 Nats-Msg-Size: 8
 ```
